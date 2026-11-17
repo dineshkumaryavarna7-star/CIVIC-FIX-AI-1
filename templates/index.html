@@ -29,7 +29,7 @@
       <!-- LLM Provider Pill & Settings -->
       <div class="d-flex align-items-center gap-2 ms-auto">
         <span id="navLlmBadge" class="badge bg-primary-subtle text-primary border border-primary-subtle px-3 py-2 rounded-pill small">
-          <i class="bi bi-robot me-1"></i> <span id="navLlmText">LLM: Built-in Neural Transformer LLM (PyTorch RAG)</span>
+          <i class="bi bi-robot me-1"></i> <span id="navLlmText">LLM: RAG guidance fallback</span>
         </span>
         <button class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-1" title="Configure LLM Provider" data-bs-toggle="modal" data-bs-target="#llmSettingsModal">
           <i class="bi bi-sliders"></i>
@@ -77,8 +77,8 @@
           <i class="bi bi-check-circle-fill"></i>
           <span>RAG Vector Store: <b>FAISS CPU</b></span>
         </div>
-        <div class="text-muted mb-1">Embeddings: all-MiniLM-L6-v2</div>
-        <div class="text-primary small" id="sidebarLlmIndicator">⚡ Active LLM: Local Engine</div>
+        <div class="text-muted mb-1">Embeddings: Gemini (hosted)</div>
+        <div class="text-primary small" id="sidebarLlmIndicator">⚡ Active LLM: RAG fallback</div>
       </div>
     </aside>
 
@@ -519,12 +519,12 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="small text-muted">CivicFix AI uses RAG to retrieve government guidelines. You can run on the built-in <b>Local Neural Generator (100% Free & Offline)</b> or connect your free API key for cloud LLMs.</p>
+          <p class="small text-muted">CivicFix AI extracts and retrieves official guideline sections with PDF text extraction and FAISS. Gemini embeddings require a server-side Gemini API key; choose a text-generation provider below for AI-written guidance and letters.</p>
 
           <div class="mb-3">
             <label class="form-label small fw-semibold">Select LLM Provider</label>
             <select class="form-select" id="llmProviderSelect" onchange="toggleApiKeyInput()">
-              <option value="auto">Auto / Local Neural LLM (Offline & Free)</option>
+              <option value="auto">Auto / RAG guidance fallback</option>
               <option value="gemini">Google Gemini (Gemini 2.5 / 1.5 Flash)</option>
               <option value="groq">Groq (Llama 3.1 8B Instant)</option>
               <option value="openai">OpenAI (GPT-4o mini)</option>

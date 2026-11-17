@@ -1,8 +1,9 @@
 import os
 import json
 import logging
-from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+from app.config import DATA_DIR
 
 logger = logging.getLogger("civicfix.llm")
 
@@ -11,7 +12,7 @@ class LLMUnavailableError(Exception):
     """Raised when an LLM is required but not configured or failed."""
 
 
-CONFIG_FILE = Path(__file__).resolve().parent.parent / "data" / "llm_config.json"
+CONFIG_FILE = DATA_DIR / "llm_config.json"
 
 
 def get_llm_config() -> Dict[str, Any]:
@@ -73,7 +74,7 @@ class LLMEngine:
             if cfg.get("openai_api_key") and len(cfg.get("openai_api_key", "")) > 15:
                 return "OpenAI (GPT-4o)"
 
-        return "Built-in Neural Transformer LLM (PyTorch RAG)"
+        return "RAG guidance fallback (no text LLM configured)"
 
     def generate_rag_guidance(
         self,
@@ -107,7 +108,7 @@ class LLMEngine:
                     res["llm_provider"] = provider
                     return res
             except Exception as e:
-                logger.error(f"Gemini LLM error: {e}. Falling back to Local Neural LLM.")
+                logger.error(f"Gemini LLM error: {e}. Falling back to RAG guidance.")
 
         # 2. Try Groq if configured
         if "Groq" in provider:
@@ -117,7 +118,7 @@ class LLMEngine:
                     res["llm_provider"] = provider
                     return res
             except Exception as e:
-                logger.error(f"Groq LLM error: {e}. Falling back to Local Neural LLM.")
+                logger.error(f"Groq LLM error: {e}. Falling back to RAG guidance.")
 
         # 3. Try OpenAI if configured
         if "OpenAI" in provider:
@@ -127,11 +128,11 @@ class LLMEngine:
                     res["llm_provider"] = provider
                     return res
             except Exception as e:
-                logger.error(f"OpenAI LLM error: {e}. Falling back to Local Neural LLM.")
+                logger.error(f"OpenAI LLM error: {e}. Falling back to RAG guidance.")
 
-        # 4. Fallback to Built-in Local Neural Transformer RAG Engine
-        res = self._local_neural_guidance(query, category, department, rag_sources, jurisdiction_notes)
-        res["llm_provider"] = "Built-in Neural Transformer LLM (PyTorch RAG)"
+        # 4. Use the existing structured fallback over retrieved guideline text.
+        res = self._rule_based_rag_guidance(query, category, department, rag_sources, jurisdiction_notes)
+        res["llm_provider"] = "RAG guidance fallback (no text LLM configured)"
         return res
 
     def generate_complaint_letter(
@@ -282,7 +283,7 @@ Respond strictly in valid JSON with: ai_analysis, procedure_steps (list), requir
         )
         return json.loads(response.choices[0].message.content)
 
-    def _local_neural_guidance(
+    def _rule_based_rag_guidance(
         self,
         query: str,
         category: str,
@@ -291,20 +292,15 @@ Respond strictly in valid JSON with: ai_analysis, procedure_steps (list), requir
         jurisdiction_notes: Optional[str]
     ) -> Dict[str, Any]:
         """
-        Built-in PyTorch Neural Transformer RAG Generator:
-        Uses the local 6-layer MiniLM-L6 Transformer neural network to score and extract
-        the most relevant SOP directives, procedural steps, evidence clauses, and statutory
-        turnaround times directly from the retrieved municipal PDF chunks.
+        Extracts structured guidance from the guideline chunks already ranked by RAG.
         """
         import re
-        import numpy as np
-        from app.rag_engine import get_embedding_model
 
         combined_rag_text = " ".join([src.get("excerpt", "") for src in rag_sources])
         sop_match = re.search(r"\(SOP-[A-Z0-9\-]+\)", combined_rag_text)
         sop_code = sop_match.group(0) if sop_match else "(Municipal Citizen Charter SOP)"
 
-        # Extract candidate sentences from RAG context and rank via PyTorch Transformer attention
+        # The first retrieved chunk is already the highest-scoring FAISS result.
         best_rag_sentence = ""
         if combined_rag_text.strip():
             sentences = [
@@ -312,19 +308,11 @@ Respond strictly in valid JSON with: ai_analysis, procedure_steps (list), requir
                 if len(s.strip()) > 25
             ]
             if sentences:
-                try:
-                    model = get_embedding_model()
-                    q_emb = model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
-                    s_embs = model.encode(sentences, convert_to_numpy=True, normalize_embeddings=True)
-                    scores = np.dot(s_embs, q_emb[0])
-                    best_idx = int(np.argmax(scores))
-                    best_rag_sentence = sentences[best_idx]
-                except Exception:
-                    best_rag_sentence = sentences[0]
+                best_rag_sentence = sentences[0]
 
         analysis = (
-            f"Based on semantic analysis of your report (\"{query[:90]}\"), the Built-in Neural Transformer LLM "
-            f"classified this grievance under '{category}' {sop_code} and routed it to the {department}. "
+            f"Based on your report (\"{query[:90]}\"), this grievance is classified under '{category}' "
+            f"{sop_code} and routed to the {department}. "
         )
         if best_rag_sentence:
             analysis += f"According to retrieved municipal guidelines: \"{best_rag_sentence}\""

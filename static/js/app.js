@@ -30,7 +30,7 @@ async function fetchLlmStatus() {
     const res = await fetch("/api/llm/status");
     if (!res.ok) return;
     const data = await res.json();
-    const active = data.active_provider || "Local Neural LLM";
+    const active = data.active_provider || "RAG guidance fallback";
     
     const navText = document.getElementById("navLlmText");
     const sidebarIndicator = document.getElementById("sidebarLlmIndicator");
@@ -85,7 +85,7 @@ async function saveLlmSettings() {
   const apiKey = keyInput.value.trim();
 
   if (provider !== "auto" && !apiKey) {
-    alert("Please enter a valid API key for " + provider.toUpperCase() + ", or choose 'Auto / Local Neural LLM' for 100% offline free mode.");
+    alert("Please enter a valid API key for " + provider.toUpperCase() + ", or choose the RAG guidance fallback.");
     return;
   }
 

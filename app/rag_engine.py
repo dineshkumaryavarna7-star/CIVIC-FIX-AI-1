@@ -1,12 +1,10 @@
 import os
 import json
 import logging
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 import numpy as np
 import pymupdf  # PyMuPDF
 import faiss
-from sentence_transformers import SentenceTransformer
 
 from app.config import FAISS_DIR
 
@@ -14,37 +12,58 @@ logger = logging.getLogger("civicfix.rag")
 
 INDEX_FILE = FAISS_DIR / "civic_faiss.index"
 METADATA_FILE = FAISS_DIR / "civic_metadata.json"
-MODEL_NAME = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSION = 768
+EMBEDDING_BATCH_SIZE = 32
 
-# Lazy-loaded global model instance
-_model: Optional[SentenceTransformer] = None
 
+def _embed_texts(texts: List[str], task_type: str) -> np.ndarray:
+    """Generate normalized Gemini embeddings without bundling a local ML model."""
+    if not texts:
+        return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
 
-def get_embedding_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        # Check for cached snapshot first to ensure 100% offline and rapid execution
-        snapshot_dir = (
-            Path(os.path.expanduser("~"))
-            / ".cache"
-            / "huggingface"
-            / "hub"
-            / "models--sentence-transformers--all-MiniLM-L6-v2"
-            / "snapshots"
-            / "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
+    from google import genai
+    from google.genai import types
+
+    from app.llm_engine import get_llm_config
+
+    api_key = (
+        os.environ.get("CIVICFIX_EMBEDDING_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or get_llm_config().get("gemini_api_key")
+    )
+    if not api_key:
+        raise RuntimeError(
+            "RAG embeddings require a Gemini API key. Configure "
+            "CIVICFIX_EMBEDDING_API_KEY or GEMINI_API_KEY."
         )
-        if snapshot_dir.exists():
-            logger.info(f"Loading SentenceTransformer directly from local cache: {snapshot_dir}")
-            _model = SentenceTransformer(str(snapshot_dir))
-        else:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            logger.info(f"Loading SentenceTransformer model '{MODEL_NAME}' in local mode...")
-            try:
-                _model = SentenceTransformer(MODEL_NAME, local_files_only=True)
-            except Exception:
-                _model = SentenceTransformer(MODEL_NAME)
-    return _model
+
+    client = genai.Client(api_key=api_key)
+    batches = []
+    for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        batch = texts[start:start + EMBEDDING_BATCH_SIZE]
+        response = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=batch,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=EMBEDDING_DIMENSION,
+            ),
+        )
+        if not response.embeddings or len(response.embeddings) != len(batch):
+            raise RuntimeError("Gemini returned an incomplete embedding response.")
+        batches.extend(embedding.values for embedding in response.embeddings)
+
+    vectors = np.asarray(batches, dtype=np.float32)
+    if vectors.shape != (len(texts), EMBEDDING_DIMENSION):
+        raise RuntimeError(
+            f"Gemini returned embedding shape {vectors.shape}; "
+            f"expected ({len(texts)}, {EMBEDDING_DIMENSION})."
+        )
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    if np.any(norms == 0):
+        raise RuntimeError("Gemini returned a zero-length embedding.")
+    return np.ascontiguousarray(vectors / norms)
 
 
 class RAGEngine:
@@ -53,15 +72,21 @@ class RAGEngine:
         self.meta_path = str(METADATA_FILE)
         self.index: Optional[faiss.IndexFlatIP] = None
         self.metadata: List[Dict[str, Any]] = []
+        self.needs_rebuild = True
         self._load_or_initialize()
 
     def _load_or_initialize(self):
         """Loads existing FAISS index and metadata or initializes empty structures."""
         if os.path.exists(self.index_path) and os.path.exists(self.meta_path):
             try:
-                self.index = faiss.read_index(self.index_path)
+                index = faiss.read_index(self.index_path)
                 with open(self.meta_path, "r", encoding="utf-8") as f:
-                    self.metadata = json.load(f)
+                    metadata = json.load(f)
+                if index.d != EMBEDDING_DIMENSION or index.ntotal != len(metadata):
+                    raise ValueError("Saved FAISS index does not match the current embedding format.")
+                self.index = index
+                self.metadata = metadata
+                self.needs_rebuild = False
                 logger.info(f"Loaded FAISS index with {self.index.ntotal} vectors and {len(self.metadata)} metadata records.")
             except Exception as e:
                 logger.error(f"Error loading existing index: {e}. Reinitializing.")
@@ -70,9 +95,7 @@ class RAGEngine:
             self._initialize_empty()
 
     def _initialize_empty(self):
-        # 384 dimensions for all-MiniLM-L6-v2
-        dim = 384
-        self.index = faiss.IndexFlatIP(dim)
+        self.index = faiss.IndexFlatIP(EMBEDDING_DIMENSION)
         self.metadata = []
         self._persist()
 
@@ -136,19 +159,18 @@ class RAGEngine:
         if not chunks:
             return
 
-        model = get_embedding_model()
         texts = [c["text"] for c in chunks]
 
         # Generate normalized embeddings for cosine similarity via inner product
-        embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-        embeddings = embeddings.astype(np.float32)
+        embeddings = _embed_texts(texts, task_type="RETRIEVAL_DOCUMENT")
 
-        if self.index is None:
+        if self.index is None or self.index.d != EMBEDDING_DIMENSION:
             self._initialize_empty()
 
         self.index.add(embeddings)
         self.metadata.extend(chunks)
         self._persist()
+        self.needs_rebuild = False
         logger.info(f"Added {len(chunks)} chunks to FAISS index. Total: {self.index.ntotal}")
 
     def rebuild_index_from_documents(self, documents: List[Dict[str, Any]]):
@@ -174,6 +196,7 @@ class RAGEngine:
             self.add_document_chunks(all_chunks)
         else:
             self._persist()
+            self.needs_rebuild = False
 
     def query_guidelines(
         self,
@@ -188,9 +211,7 @@ class RAGEngine:
         if self.index is None or self.index.ntotal == 0 or not self.metadata:
             return []
 
-        model = get_embedding_model()
-        query_vec = model.encode([query], convert_to_numpy=True, normalize_embeddings=True)
-        query_vec = query_vec.astype(np.float32)
+        query_vec = _embed_texts([query], task_type="RETRIEVAL_QUERY")
 
         k = min(top_k, self.index.ntotal)
         distances, indices = self.index.search(query_vec, k)

@@ -189,7 +189,8 @@ def initialize_sample_data_if_needed(db: Session):
     seed_departments_and_users(db)
 
     # Check if any documents exist
-    doc_count = db.query(Document).count()
+    documents = db.query(Document).all()
+    doc_count = len(documents)
     if doc_count == 0:
         sample_pdf_path = str(GUIDELINES_DIR / "Urban_Civic_Grievance_Guidelines_2026.pdf")
         if not os.path.exists(sample_pdf_path):
@@ -222,3 +223,24 @@ def initialize_sample_data_if_needed(db: Session):
         db.commit()
 
         rag_engine.add_document_chunks(chunks)
+    elif rag_engine.needs_rebuild:
+        index_documents = []
+        for document in documents:
+            if (
+                document.filename == "Urban_Civic_Grievance_Guidelines_2026.pdf"
+                and not os.path.exists(document.file_path)
+            ):
+                create_sample_guideline_pdf(document.file_path)
+            if not os.path.exists(document.file_path):
+                raise RuntimeError(
+                    f"RAG source file '{document.file_path}' is missing. "
+                    "Restore the file from persistent object storage before rebuilding the index."
+                )
+            index_documents.append({
+                "id": document.id,
+                "title": document.title,
+                "filename": document.filename,
+                "file_path": document.file_path,
+                "category_tag": document.category_tag,
+            })
+        rag_engine.rebuild_index_from_documents(index_documents)

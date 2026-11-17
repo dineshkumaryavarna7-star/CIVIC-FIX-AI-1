@@ -1,8 +1,13 @@
 from pathlib import Path
+import os
 
 # Base Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+IS_VERCEL = os.environ.get("VERCEL") == "1"
+DATA_DIR = Path(
+    os.environ.get("CIVICFIX_DATA_DIR")
+    or ("/tmp/civicfix-ai" if IS_VERCEL else BASE_DIR / "data")
+)
 UPLOADS_DIR = DATA_DIR / "uploads"
 GUIDELINES_DIR = UPLOADS_DIR / "guidelines"
 COMPLAINT_IMAGES_DIR = UPLOADS_DIR / "complaints"
@@ -16,7 +21,24 @@ COMPLAINT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 FAISS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Database
-DATABASE_URL = f"sqlite:///{DATA_DIR / 'civicfix.db'}"
+database_url = os.environ.get("DATABASE_URL")
+if IS_VERCEL:
+    if not database_url or not database_url.startswith(
+        ("postgres://", "postgresql://", "postgresql+psycopg://")
+    ):
+        raise RuntimeError(
+            "Vercel requires a persistent PostgreSQL DATABASE_URL. "
+            "Configure a PostgreSQL connection string in the Vercel project settings."
+        )
+elif not database_url:
+    database_url = f"sqlite:///{DATA_DIR / 'civicfix.db'}"
+
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif database_url.startswith("postgresql://"):
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+DATABASE_URL = database_url
 
 # 5 Strict Categories
 CATEGORIES = [

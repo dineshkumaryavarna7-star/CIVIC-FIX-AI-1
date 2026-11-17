@@ -1,16 +1,40 @@
 import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.config import CATEGORIES, CATEGORY_DEPARTMENT_MAP
 from app.classifier import classify_issue
 from app.guidance_service import get_ai_guidance
 from app.letter_generator import generate_letter_content, generate_letter_pdf
+from app.rag_engine import EMBEDDING_BATCH_SIZE, EMBEDDING_DIMENSION, _embed_texts
 
 client = TestClient(app)
 
 
 class TestCivicFixAI(unittest.TestCase):
+
+    @patch.dict(os.environ, {"CIVICFIX_EMBEDDING_API_KEY": "test-key"})
+    @patch("google.genai.Client")
+    def test_gemini_embeddings_are_batched_and_normalized(self, client_class):
+        client = client_class.return_value
+        client.models.embed_content.side_effect = lambda **kwargs: SimpleNamespace(
+            embeddings=[
+                SimpleNamespace(values=[3.0, 4.0] + [0.0] * (EMBEDDING_DIMENSION - 2))
+                for _ in kwargs["contents"]
+            ]
+        )
+
+        embeddings = _embed_texts(
+            ["guideline"] * (EMBEDDING_BATCH_SIZE + 1),
+            task_type="RETRIEVAL_DOCUMENT"
+        )
+
+        self.assertEqual(embeddings.shape, (EMBEDDING_BATCH_SIZE + 1, EMBEDDING_DIMENSION))
+        self.assertAlmostEqual(float(embeddings[0][0]), 0.6)
+        self.assertAlmostEqual(float(embeddings[0][1]), 0.8)
+        self.assertEqual(client.models.embed_content.call_count, 2)
 
     def test_categories_and_departments(self):
         self.assertEqual(len(CATEGORIES), 5)

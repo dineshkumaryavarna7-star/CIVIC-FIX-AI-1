@@ -1,0 +1,15 @@
+.git/
+.env
+.env.*
+**/.env
+**/.env.*
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+tests/
+run_suite.py
+data/
+Dockerfile
+render.yaml
+README.md
